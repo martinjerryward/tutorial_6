@@ -3,15 +3,19 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 from bson.objectid import ObjectId
 from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
 
 app = Flask(__name__)
 
-# Env variable name: MONGO_URI (set on render)
 MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI)
 
-db = client['user_database']
-users_collection = db['users']
+def get_db_collection():
+    if not MONGO_URI:
+        raise Exception("MONGO_URI environment variable not set")
+    
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client['user_database']
+    return db['users']
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
@@ -26,6 +30,7 @@ def health_check():
 @app.route('/users', methods=['GET'])
 def get_users():
     try:
+        users_collection = get_db_collection()
         users = list(users_collection.find())
         for user in users:
             user['_id'] = str(user['_id'])
@@ -45,6 +50,7 @@ def add_user():
         if not data or 'email' not in data or 'firstName' not in data:
             return jsonify({"message": "Missing required fields", "success": False}), 400
         
+        users_collection = get_db_collection()
         new_user = {"email": data['email'], "firstName": data['firstName']}
         result = users_collection.insert_one(new_user)
         return jsonify({"message": "User added", "success": True, "id": str(result.inserted_id)}), 201
@@ -55,6 +61,7 @@ def add_user():
 @app.route('/user/<user_id>', methods=['GET'])
 def get_user(user_id):
     try:
+        users_collection = get_db_collection()
         user = users_collection.find_one({'_id': ObjectId(user_id)})
         if not user:
             return jsonify({"message": "User not found", "success": False}), 404
@@ -68,6 +75,7 @@ def get_user(user_id):
 def update_user(user_id):
     try:
         data = request.get_json()
+        users_collection = get_db_collection()
         update_data = {k: v for k, v in data.items() if k in ['email', 'firstName']}
         result = users_collection.update_one({'_id': ObjectId(user_id)}, {'$set': update_data})
         if result.matched_count == 0:
@@ -76,10 +84,11 @@ def update_user(user_id):
     except Exception as e:
         return jsonify({"message": "Error updating user", "success": False}), 500
 
-# Delete user
+# DELETE a user
 @app.route('/delete/<user_id>', methods=['DELETE'])
 def delete_user(user_id):
     try:
+        users_collection = get_db_collection()
         result = users_collection.delete_one({'_id': ObjectId(user_id)})
         if result.deleted_count == 0:
             return jsonify({"message": "User not found", "success": False}), 404
@@ -88,6 +97,8 @@ def delete_user(user_id):
     except Exception as e:
         return jsonify({"message": "Internal error", "success": False}), 500
 
+# Run the Flask app
 if __name__ == '__main__':
+    # Use the port Render provides or default to 5001
     port = int(os.environ.get("PORT", 5001))
     app.run(debug=False, host='0.0.0.0', port=port)
